@@ -110,7 +110,7 @@ impl SceneConstruct for Quadruples {
             play!(stage; group.rt(0.9));
 
             let f = probe.curve;
-            let curve = FunctionGraph::new(move |x| f(x))
+            let curve = FunctionGraph::new(f)
                 .x_range([probe.span[0], probe.span[1], 0.04])
                 .style(stroke_style(color, 5.0))
                 .build()?;

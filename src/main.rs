@@ -8,7 +8,9 @@
 //! hoeffding script                     # narration lines as TSV (id, text)
 //! hoeffding render all|<chapter>... [--res 1920x1080] [--fps 60] [--out DIR]
 //!                  [--narration DIR] [--crf N] [--preset P] [--silent]
-//!                  [--encoder libx264|h264_nvenc|hevc_nvenc] [--gpu N] [--threads N]
+//!                  [--encoder libx264|h264_nvenc|hevc_nvenc|h264_videotoolbox]
+//!                  [--gpu N] [--threads N] [--max-frames N]
+//! hoeffding help                       # the full option list
 //! ```
 
 mod chapters;
@@ -25,8 +27,40 @@ use fmn::prelude::*;
 
 use crate::kit::{BACKGROUND, Kit};
 
+const USAGE: &str = "\
+usage: hoeffding <command> [options]
+
+commands:
+  stats                    print every number the video shows
+  script                   print the narration as TSV (id, text)
+  glyphs [OUT.png]         render the typesetting probe sheet
+  render [all|CHAPTER...]  render chapters to OUT/<chapter>.mp4
+                           (01_hook 02_gallery 03_quadruples 04_ranks
+                            05_counting 06_formula 07_shuffle 08_outro)
+  help                     show this text
+
+render options:
+  --res WxH         frame size (default 1920x1080)
+  --fps N           frame rate (default 60)
+  --out DIR         output directory (default renders)
+  --narration DIR   voice-over: one <id>.wav per script line
+  --silent          no narration, pad or chimes
+  --crf N           delivery quality: x264 CRF, or NVENC constant quality;
+                    also enables --preset, --gpu and 256k AAC
+  --preset NAME     x264 preset, ultrafast..veryslow (with --crf; NVENC
+                    always uses p7)
+  --encoder NAME    libx264 (default), h264_nvenc, hevc_nvenc,
+                    h264_videotoolbox (no rate control: --crf is ignored)
+  --gpu N           NVENC device index (with --crf)
+  --threads N       fixed render thread count
+  --max-frames N    stop after N frames (profiling; the render then fails
+                    by design and publishes nothing)
+";
+
+#[derive(Debug)]
 struct Args {
     command: String,
+    help: bool,
     targets: Vec<String>,
     res: (u32, u32),
     fps: u32,
@@ -34,17 +68,18 @@ struct Args {
     silent: bool,
     narration: Option<PathBuf>,
     crf: Option<u8>,
-    preset: &'static str,
+    preset: Option<&'static str>,
     threads: Option<u32>,
     encoder: String,
     gpu: Option<u32>,
     max_frames: Option<u64>,
 }
 
-fn parse_args() -> Result<Args, String> {
-    let mut it = std::env::args().skip(1);
-    let command = it.next().ok_or("usage: hoeffding stats | glyphs OUT.png | render all|CHAPTER... [--res WxH] [--fps N] [--out DIR]")?;
+fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Args, String> {
+    let mut it = argv.into_iter();
+    let command = it.next().ok_or("missing command")?;
     let mut args = Args {
+        help: matches!(command.as_str(), "help" | "-h" | "--help"),
         command,
         targets: Vec::new(),
         res: (1920, 1080),
@@ -53,7 +88,7 @@ fn parse_args() -> Result<Args, String> {
         silent: false,
         narration: None,
         crf: None,
-        preset: "medium",
+        preset: None,
         threads: None,
         encoder: "libx264".to_owned(),
         gpu: None,
@@ -78,6 +113,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--out" => args.out = PathBuf::from(it.next().ok_or("--out needs DIR")?),
             "--silent" => args.silent = true,
+            "-h" | "--help" => args.help = true,
             "--narration" => {
                 args.narration = Some(PathBuf::from(it.next().ok_or("--narration needs DIR")?))
             }
@@ -126,7 +162,7 @@ fn parse_args() -> Result<Args, String> {
                 )
             }
             "--preset" => {
-                args.preset = match it.next().ok_or("--preset needs a name")?.as_str() {
+                args.preset = Some(match it.next().ok_or("--preset needs a name")?.as_str() {
                     "ultrafast" => "ultrafast",
                     "veryfast" => "veryfast",
                     "faster" => "faster",
@@ -136,8 +172,9 @@ fn parse_args() -> Result<Args, String> {
                     "slower" => "slower",
                     "veryslow" => "veryslow",
                     _ => return Err("unknown x264 preset".into()),
-                }
+                })
             }
+            other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             other => args.targets.push(other.to_owned()),
         }
     }
@@ -159,7 +196,17 @@ fn options(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     stats::self_check();
-    let args = parse_args()?;
+    let args = match parse_args(std::env::args().skip(1)) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("hoeffding: {error}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    if args.help {
+        print!("{USAGE}");
+        return Ok(());
+    }
     match args.command.as_str() {
         "stats" => print_stats(),
         "script" => {
@@ -195,6 +242,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         })
                         .collect::<Result<_, _>>()?
                 };
+            if args.crf.is_none() && (args.preset.is_some() || args.gpu.is_some()) {
+                eprintln!(
+                    "note: --preset and --gpu take effect only together with --crf; \
+                     encoding with the engine's default rate control"
+                );
+            }
+            if args.crf.is_some() && args.encoder == "h264_videotoolbox" {
+                eprintln!("note: h264_videotoolbox gets no rate-control flags; --crf is ignored");
+            }
             std::fs::create_dir_all(&args.out)?;
             let audio = args.out.join("audio");
             std::fs::create_dir_all(&audio)?;
@@ -247,7 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         opts.ffmpeg = Some(encode::capability(encode::Quality {
                             quality: crf,
                             gpu: args.gpu,
-                            preset: args.preset,
+                            preset: args.preset.unwrap_or("medium"),
                             audio_bitrate: "256k",
                             timeout: std::time::Duration::from_secs(4 * 3600),
                         }));
@@ -321,4 +377,84 @@ fn print_stats() {
         h.r, h.s, h.q, h.d1, h.d2, h.d3, h.d
     );
     println!("C(5000,4) = {}", stats::choose(5000, 4));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(line: &str) -> Result<Args, String> {
+        parse_args(line.split_whitespace().map(str::to_owned))
+    }
+
+    #[test]
+    fn render_parallel_invocation_parses_exactly() {
+        // render_parallel.sh with HOEFFDING_ARGS="--threads 16 --encoder h264_nvenc --crf 16".
+        let a = parse(
+            "render 05_counting --res 3840x2160 --fps 60 --preset slow --narration narration_v5 \
+             --out out/05_counting --threads 16 --encoder h264_nvenc --crf 16 --gpu 1",
+        )
+        .unwrap();
+        assert_eq!(a.command, "render");
+        assert_eq!(a.targets, ["05_counting"]);
+        assert_eq!((a.res, a.fps), ((3840, 2160), 60));
+        assert_eq!(a.preset, Some("slow"));
+        assert_eq!(a.narration, Some(PathBuf::from("narration_v5")));
+        assert_eq!(a.out, PathBuf::from("out/05_counting"));
+        assert_eq!((a.threads, a.crf, a.gpu), (Some(16), Some(16), Some(1)));
+        assert_eq!(a.encoder, "h264_nvenc");
+        assert!(!a.silent && !a.help && a.max_frames.is_none());
+    }
+
+    #[test]
+    fn defaults() {
+        let a = parse("render").unwrap();
+        assert!(a.targets.is_empty());
+        assert_eq!(
+            (a.res, a.fps, a.out),
+            ((1920, 1080), 60, PathBuf::from("renders"))
+        );
+        assert_eq!(
+            (a.crf, a.preset, a.gpu, a.threads),
+            (None, None, None, None)
+        );
+        assert_eq!(a.encoder, "libx264");
+        assert!(a.narration.is_none() && !a.silent);
+    }
+
+    #[test]
+    fn remaining_flags_parse() {
+        let a =
+            parse("render 01_hook 08_outro --silent --max-frames 900 --encoder h264_videotoolbox")
+                .unwrap();
+        assert_eq!(a.targets, ["01_hook", "08_outro"]);
+        assert!(a.silent);
+        assert_eq!(a.max_frames, Some(900));
+        assert_eq!(a.encoder, "h264_videotoolbox");
+    }
+
+    #[test]
+    fn typos_are_errors_not_chapter_names() {
+        assert_eq!(
+            parse("render --fsp 30").unwrap_err(),
+            "unknown option --fsp"
+        );
+        assert_eq!(
+            parse("stats --verbose").unwrap_err(),
+            "unknown option --verbose"
+        );
+        assert!(parse("render --preset ludicrous").is_err());
+        assert!(parse("render --encoder libx265").is_err());
+        assert!(parse("render --res 1920").is_err());
+        assert!(parse("render --crf").is_err());
+        assert!(parse("").is_err());
+    }
+
+    #[test]
+    fn help_in_any_position() {
+        for line in ["help", "-h", "--help", "render --help", "render 01_hook -h"] {
+            assert!(parse(line).unwrap().help, "{line}");
+        }
+        assert!(!parse("stats").unwrap().help);
+    }
 }

@@ -28,6 +28,9 @@ const BAR_X: f64 = 4.1;
 const BAR_LEN: f64 = 2.75;
 const ROW_Y: [f64; 4] = [1.9, 0.95, 0.0, -1.2];
 
+/// One shape's dots in scene space, and its four bar targets.
+type ShapeData = (Vec<Vec3>, [(f64, f64); 4]);
+
 pub fn seed(shape: Shape) -> u64 {
     1000 + shape as u64
 }
@@ -66,7 +69,7 @@ impl SceneConstruct for Gallery {
             y: (-1.2, 1.2),
         };
         let colors = point_colors(N);
-        let data: Vec<(Vec<Vec3>, [(f64, f64); 4])> = SHAPES
+        let data: Vec<ShapeData> = SHAPES
             .iter()
             .map(|&s| {
                 let pts = stats::shape_points(s, N, seed(s));

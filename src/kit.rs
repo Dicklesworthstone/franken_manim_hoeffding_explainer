@@ -189,6 +189,7 @@ impl Kit {
     }
 
     /// Detached italic/bold-capable text.
+    #[allow(clippy::too_many_arguments)]
     pub fn text_styled(
         &self,
         stage: &mut Stage<'_>,
@@ -443,20 +444,15 @@ pub fn children(stage: &Stage<'_>, group: Mob) -> Vec<Mob> {
 
 // --------------------------------------------------------------- playback
 
-/// Set run time / rate / lag on any animation, fluently.
+/// Set run time / lag on any animation, fluently.
 pub trait Timed: Sized {
     fn rt(self, run_time: f64) -> Self;
-    fn rate(self, f: fn(f64) -> f64) -> Self;
     fn lag(self, lag_ratio: f64) -> Self;
 }
 
 impl<A: Animation> Timed for A {
     fn rt(mut self, run_time: f64) -> Self {
         self.update_rate_info(Some(run_time), None, None);
-        self
-    }
-    fn rate(mut self, f: fn(f64) -> f64) -> Self {
-        self.update_rate_info(None, Some(RateFunc::Base(f)), None);
         self
     }
     fn lag(mut self, lag_ratio: f64) -> Self {

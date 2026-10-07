@@ -1,4 +1,4 @@
-# Parallel rustc front-end (nightly). Added by build-settings sweep.
+# Parallel rustc front-end (nightly only, like the rest of this build).
 [build]
 rustflags = ["-Z", "threads=4"]
 fingerprint = "content"
@@ -8,6 +8,3 @@ fingerprint = "content"
 # The pinned nightly must compare contents before reusing compiled output.
 [unstable]
 checksum-freshness = true
-# The Gauntlet executes Cargo's exact fmn artifact through its existing CLI
-# dev-dependency; no guessed target-directory path or external build is used.
-bindeps = true

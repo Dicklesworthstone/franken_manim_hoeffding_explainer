@@ -297,6 +297,7 @@ pub fn permutation(n: usize, data: &mut Data) -> Vec<usize> {
 /// The 99th percentile of |measure| over `trials` shuffles of y: what
 /// "pure coincidence" looks like for this N (a permutation test).
 pub fn null_q99(points: &[(f64, f64)], trials: usize, seed: u64) -> Measures {
+    assert!(trials >= 2, "a noise ceiling needs at least 2 shuffles");
     let mut data = Data::new(seed);
     let x: Vec<f64> = points.iter().map(|p| p.0).collect();
     let y: Vec<f64> = points.iter().map(|p| p.1).collect();
@@ -318,5 +319,268 @@ pub fn null_q99(points: &[(f64, f64)], trials: usize, seed: u64) -> Measures {
         spearman: q(&mut cols[1]),
         kendall: q(&mut cols[2]),
         hoeffding: q(&mut cols[3]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chapters::gallery;
+
+    /// Seeded tie-free samples (uniform doubles never collide in practice).
+    fn sample(n: usize, seed: u64) -> (Vec<f64>, Vec<f64>) {
+        let mut g = Data::new(seed);
+        let x: Vec<f64> = (0..n).map(|_| g.uniform(-1.0, 1.0)).collect();
+        let y: Vec<f64> = x.iter().map(|&a| a * a + 0.3 * g.normal()).collect();
+        (x, y)
+    }
+
+    /// Seeded samples on a coarse grid, so ties (and exact twins) are common.
+    fn tied_sample(n: usize, seed: u64) -> (Vec<f64>, Vec<f64>) {
+        let mut g = Data::new(seed);
+        let x: Vec<f64> = (0..n).map(|_| (g.uniform(0.0, 5.0)).floor()).collect();
+        let y: Vec<f64> = x
+            .iter()
+            .map(|&a| (a + g.uniform(0.0, 3.0)).floor())
+            .collect();
+        (x, y)
+    }
+
+    /// Hoeffding's (1948) definition, by brute force: the mean of the order-5
+    /// kernel over all ordered 5-tuples of distinct points, times the SAS
+    /// factor 30. Independent of ranks, Q and the D1/D2/D3 bookkeeping.
+    fn u_statistic_d(x: &[f64], y: &[f64]) -> f64 {
+        let psi = |a: f64, b: f64, c: f64| f64::from(a >= b) - f64::from(a >= c);
+        let n = x.len();
+        let mut total = 0.0;
+        for a in 0..n {
+            for b in 0..n {
+                for c in 0..n {
+                    for d in 0..n {
+                        for e in 0..n {
+                            let idx = [a, b, c, d, e];
+                            if (0..5).any(|i| idx[i + 1..].contains(&idx[i])) {
+                                continue;
+                            }
+                            total += psi(x[a], x[b], x[c])
+                                * psi(x[a], x[d], x[e])
+                                * psi(y[a], y[b], y[c])
+                                * psi(y[a], y[d], y[e]);
+                        }
+                    }
+                }
+            }
+        }
+        let tuples: f64 = (0..5).map(|i| (n - i) as f64).product();
+        30.0 * total / 4.0 / tuples
+    }
+
+    #[test]
+    fn ranks_average_ties() {
+        assert_eq!(ranks(&[3.0, 1.0, 3.0, 2.0]), [3.5, 1.0, 3.5, 2.0]);
+        assert_eq!(ranks(&[7.0, 7.0, 7.0]), [2.0, 2.0, 2.0]);
+        assert_eq!(ranks(&[4.0]), [1.0]);
+        assert!(ranks(&[]).is_empty());
+    }
+
+    #[test]
+    fn worked_example_matches_the_article_and_the_on_screen_fraction() {
+        self_check();
+        // Chapter 6 types this substitution into its TeX:
+        // 30 * (8*7*196.25 + 10696 - 2*8*1329.5) / (10*9*8*7*6) = 30 * 414/30240.
+        let h = hoeffding(&HEIGHTS, &WEIGHTS);
+        let n = HEIGHTS.len() as f64;
+        assert_eq!(n, 10.0);
+        let numerator = (n - 2.0) * (n - 3.0) * h.d1 + h.d2 - 2.0 * (n - 2.0) * h.d3;
+        let denominator = n * (n - 1.0) * (n - 2.0) * (n - 3.0) * (n - 4.0);
+        assert_eq!((numerator, denominator), (414.0, 30240.0));
+        assert_eq!(h.d, 30.0 * 414.0 / 30240.0);
+    }
+
+    #[test]
+    fn rank_formula_equals_hoeffdings_u_statistic_without_ties() {
+        for (n, seed) in [(5, 1), (6, 2), (7, 3), (8, 4), (9, 5), (9, 6)] {
+            let (x, y) = sample(n, seed);
+            let fast = hoeffding(&x, &y).d;
+            let brute = u_statistic_d(&x, &y);
+            assert!(
+                (fast - brute).abs() < 1e-12,
+                "n={n} seed={seed}: rank formula {fast} vs U-statistic {brute}"
+            );
+        }
+    }
+
+    #[test]
+    fn d_is_invariant_under_strictly_monotone_and_reflecting_transforms() {
+        for (x, y) in [sample(60, 11), tied_sample(60, 12)] {
+            let d = hoeffding(&x, &y).d;
+            let fx: Vec<f64> = x.iter().map(|&a| (3.0 * a).exp()).collect();
+            let gy: Vec<f64> = y.iter().map(|&b| b * b * b + 7.0).collect();
+            let neg_x: Vec<f64> = x.iter().map(|&a| -a).collect();
+            assert_eq!(hoeffding(&fx, &gy).d, d, "increasing transforms");
+            assert_eq!(hoeffding(&neg_x, &y).d, d, "reflecting X");
+        }
+    }
+
+    #[test]
+    fn d_is_symmetric_and_ignores_the_order_of_the_pairs() {
+        for (x, y) in [sample(50, 21), tied_sample(50, 22)] {
+            let d = hoeffding(&x, &y).d;
+            assert_eq!(hoeffding(&y, &x).d, d, "swapping X and Y");
+            let perm = permutation(x.len(), &mut Data::new(23));
+            let px: Vec<f64> = perm.iter().map(|&k| x[k]).collect();
+            let py: Vec<f64> = perm.iter().map(|&k| y[k]).collect();
+            assert_eq!(hoeffding(&px, &py).d, d, "reordering the pairs");
+        }
+    }
+
+    #[test]
+    fn perfect_monotone_dependence_scores_exactly_one() {
+        for n in [5, 6, 10, 37] {
+            let x: Vec<f64> = (0..n).map(f64::from).collect();
+            let up: Vec<f64> = x.iter().map(|&a| a.powi(3)).collect();
+            let down: Vec<f64> = x.iter().map(|&a| -a).collect();
+            assert_eq!(hoeffding(&x, &up).d, 1.0, "increasing, n={n}");
+            assert_eq!(hoeffding(&x, &down).d, 1.0, "decreasing, n={n}");
+        }
+    }
+
+    /// Every ordering of 0..n (Heap's algorithm).
+    fn all_orderings(n: usize) -> Vec<Vec<f64>> {
+        fn heap(k: usize, a: &mut Vec<f64>, out: &mut Vec<Vec<f64>>) {
+            if k <= 1 {
+                out.push(a.clone());
+                return;
+            }
+            for i in 0..k {
+                heap(k - 1, a, out);
+                a.swap(if k.is_multiple_of(2) { i } else { 0 }, k - 1);
+            }
+        }
+        let mut out = Vec::new();
+        heap(n, &mut (0..n).map(|i| i as f64).collect(), &mut out);
+        out
+    }
+
+    /// Chapter 6 (line f8): "it never drops below minus one half", and one is
+    /// a perfectly monotone relationship. Checked over every ordering of
+    /// small samples, where the extremes actually occur (-1/2 at N = 5).
+    #[test]
+    fn d_stays_within_the_narrated_range() {
+        for n in [5, 6, 7] {
+            let x: Vec<f64> = (0..n).map(|i| i as f64).collect();
+            let orderings = all_orderings(n);
+            assert_eq!(orderings.len(), (1..=n).product::<usize>());
+            let ds: Vec<f64> = orderings.iter().map(|y| hoeffding(&x, y).d).collect();
+            let lo = ds.iter().copied().fold(f64::INFINITY, f64::min);
+            let hi = ds.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            assert!(lo >= -0.5 && hi == 1.0, "n={n}: D in [{lo}, {hi}]");
+            if n == 5 {
+                assert_eq!(lo, -0.5, "the bound is attained");
+            }
+        }
+    }
+
+    /// The [-1/2, 1] scale belongs to tie-free data. With heavy ties at small
+    /// N the tie-corrected estimator loses it: perfectly dependent two-level
+    /// data reads as strongly negative. (The video's data is tie-free apart
+    /// from the worked example, whose D is pinned above.)
+    #[test]
+    fn heavy_ties_at_small_n_leave_the_scale() {
+        let x = [0.0, 0.0, 0.0, 1.0, 1.0];
+        assert_eq!(hoeffding(&x, &x).d, -1.84375);
+    }
+
+    #[test]
+    fn d_averages_to_zero_under_independence() {
+        // D is an unbiased estimator of a quantity that is 0 under
+        // independence; shuffling Y realizes independence exactly.
+        let (x, y) = sample(40, 31);
+        let mut data = Data::new(32);
+        let trials = 400;
+        let mean = (0..trials)
+            .map(|_| {
+                let perm = permutation(y.len(), &mut data);
+                let ys: Vec<f64> = perm.iter().map(|&k| y[k]).collect();
+                hoeffding(&x, &ys).d
+            })
+            .sum::<f64>()
+            / f64::from(trials);
+        assert!(mean.abs() < 0.005, "mean D under shuffles = {mean}");
+    }
+
+    #[test]
+    fn small_correlation_cases() {
+        assert_eq!(kendall(&[1.0, 2.0, 3.0], &[1.0, 3.0, 2.0]), 1.0 / 3.0);
+        assert_eq!(pearson(&[1.0, 2.0, 3.0], &[5.0, 5.0, 5.0]), 0.0);
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0];
+        let cubed = x.map(|a: f64| a.powi(3));
+        assert!((spearman(&x, &cubed) - 1.0).abs() < 1e-15);
+        assert!(
+            pearson(&x, &cubed) < 0.99,
+            "Pearson only sees the linear part"
+        );
+    }
+
+    /// Chapter 2's narration makes a claim about every shape (lines g3-g9).
+    /// Each must hold for the exact points and noise ceilings the video uses.
+    #[test]
+    fn the_gallery_narration_is_true_for_the_rendered_data() {
+        let above = |v: f64, ceiling: f64| v.abs() > ceiling;
+        for shape in [
+            Shape::Line,
+            Shape::Parabola,
+            Shape::Ring,
+            Shape::Cross,
+            Shape::Wave,
+            Shape::Noise,
+        ] {
+            let pts = shape_points(shape, gallery::N, gallery::seed(shape));
+            let m = measures(&pts);
+            let q = null_q99(&pts, gallery::TRIALS, 99);
+            let correlations = [
+                above(m.pearson, q.pearson),
+                above(m.spearman, q.spearman),
+                above(m.kendall, q.kendall),
+            ];
+            let d_above = above(m.hoeffding, q.hoeffding);
+            let (want_correlations, want_d) = match shape {
+                // "For a straight line, everyone agrees."
+                Shape::Line => (true, true),
+                // "Pure noise: every measure stays under its ceiling, D included."
+                Shape::Noise => (false, false),
+                // Parabola, ring, X, wave: "the correlations see nothing.
+                // D sees it clearly."
+                _ => (false, true),
+            };
+            assert_eq!(
+                (correlations, d_above),
+                ([want_correlations; 3], want_d),
+                "{}: measures {m:?} vs ceilings {q:?}",
+                shape.label()
+            );
+        }
+    }
+
+    #[test]
+    fn counting_and_shuffling_helpers() {
+        assert_eq!(choose(5000, 4), 26_010_428_123_750.0);
+        assert_eq!(choose(10, 0), 1.0);
+        for n in [0, 1, 2, 17, 150] {
+            let mut p = permutation(n, &mut Data::new(5));
+            assert_eq!(p, permutation(n, &mut Data::new(5)), "seeded");
+            p.sort_unstable();
+            assert_eq!(p, (0..n).collect::<Vec<_>>(), "a bijection on 0..{n}");
+        }
+        assert_ne!(
+            permutation(50, &mut Data::new(5)),
+            permutation(50, &mut Data::new(6))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "at least 2 shuffles")]
+    fn a_noise_ceiling_needs_shuffles() {
+        null_q99(&shape_points(Shape::Noise, 10, 1), 1, 1);
     }
 }
