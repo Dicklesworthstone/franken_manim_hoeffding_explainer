@@ -5,7 +5,7 @@ A 3Blue1Brown-style explainer of **Hoeffding's D**, about 7½ minutes long and n
 The voice-over is spoken by [FrankenTTS](../frankentts) in the **robert** voice, and ffmpeg
 is used only for the encode, the final join and loudness normalization.
 
-**Final video:** `renders/final_4k/hoeffdings_d_explainer_4k.mp4`, at 3840×2160, 60 fps, H.264 High (CRF 16, preset slow, tune animation), with AAC narration normalized to −16 LUFS.
+**Final video:** `renders/final_4k_narrated/hoeffdings_d_explainer_4k.mp4`, at 3840×2160, 60 fps, H.264 High (NVENC p7, constant quality 16), with AAC narration normalized to −16 LUFS.
 An earlier unnarrated 1080p cut is in `renders/final_1080p60/`.
 
 ## Chapters
@@ -66,6 +66,28 @@ cd renders/final_4k && ../../master.sh      # join chapters + two-pass loudnorm 
 `src/encode.rs` therefore injects an `FfmpegCapability` whose process runner wraps the standard exact-image runner. It adds `-crf/-preset/-tune animation` to the libx264 job and `-b:a 256k` to the mux, and raises the timeout. Everything still runs through franken_manim's sandboxed boundary. The x264 SEI in the output confirms the settings.
 
 On macOS, `render` also retries a chapter when the known transient Darwin `killpg` EPERM race fails it (bead `fm-darwin-killpg-eperm-race-7aae`). Publication is atomic, so nothing partial is left behind.
+
+## How much you have to download
+
+The whole video comes from one 9.2 MB binary. ffmpeg is the only other thing it needs, to write MP4. Making the same kind of video with legacy manim means installing a Python stack and a LaTeX distribution. These figures were measured on macOS arm64 in October 2026, and exclude the FrankenTTS narration.
+
+| Stack | Download | Installed |
+|---|---|---|
+| **This explainer** (`hoeffding`, 9,242,880 B) + Homebrew ffmpeg | **58.1 MB** | **154.3 MB** |
+| `fmn` CLI (13,030,096 B) + Homebrew ffmpeg | 61.9 MB | 158.1 MB |
+| manim CE 0.21 + MacTeX 2026 (the docs' recommendation) | 7,001.8 MB | 10,875.4 MB |
+| manim CE 0.21 + BasicTeX + manim's tlmgr extras (the smallest LaTeX that works) | 351.5 MB | 865.4 MB |
+| manimgl 1.7.2 + MacTeX 2026 | 7,059.1 MB | 11,064.1 MB |
+| manimgl 1.7.2 + BasicTeX + extras | 408.8 MB | 1,054.1 MB |
+| Linux: manim CE + `texlive-full` via apt (the docs' Linux recommendation) | 4,679.3 MB | 9,472.4 MB |
+
+- **Inside the binary.** `hoeffding` links only macOS system libraries: libSystem, libobjc, libiconv, and the IOKit, OpenDirectory, Foundation and CoreFoundation frameworks. Its TeX engine (fmd-math) and fonts (Computer Modern and IBM Plex Sans, about 3.7 MB) are compiled in.
+- **Proof that nothing external is used.** I sandboxed the binary so it could not read MacTeX, Homebrew or any system font folder. It still typeset the formula chapter byte-identically, and with only ffmpeg allowed to run, it wrote a valid MP4.
+- **Legacy manim rows** add up:
+  - a uv-managed CPython 3.12 and the package's wheels;
+  - Homebrew `cairo pkg-config`, plus `ffmpeg` for manimgl (CE bundles its own ffmpeg inside PyAV);
+  - the LaTeX distribution: MacTeX at 6,865.0 MB download and 10,449.3 MB installed, according to the package's own install-size field.
+- **Not counted.** pycairo compiles from source on macOS, so legacy manim also needs the Xcode Command Line Tools: 1,958.5 MB on this Mac, not counted above.
 
 ## The second front door
 
