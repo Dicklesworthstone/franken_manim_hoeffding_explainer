@@ -1,8 +1,8 @@
 # Hoeffding's D: a franken_manim explainer
 
 A 3Blue1Brown-style explainer of **Hoeffding's D**, about 7½ minutes long and narrated. It was written entirely against
-[franken_manim](../franken_manim)'s native Rust front door, with no Python and no LaTeX.
-The voice-over is spoken by [FrankenTTS](../frankentts) in the **robert** voice, and ffmpeg
+[franken_manim](https://github.com/Dicklesworthstone/franken_manim)'s native Rust front door, with no Python and no LaTeX.
+The voice-over is spoken by [FrankenTTS](https://github.com/Dicklesworthstone/frankentts) in the **robert** voice, and ffmpeg
 is used only for the encode, the final join and loudness normalization.
 
 **Final video:** `renders/final_4k_narrated/hoeffdings_d_explainer_4k.mp4`, at 3840×2160, 60 fps, H.264 High (NVENC p7, constant quality 16), with AAC narration normalized to −16 LUFS.
