@@ -59,7 +59,7 @@ What it costs:
 - **Quadratic time as written.** Each Qᵢ scans every other point, so `stats::hoeffding` is O(N²). That is plenty for N = 150 and for the 2,000-shuffle test. O(N log N) algorithms exist for large N.
 - **No direction.** D says *that* X and Y are dependent, not *how*. There is no sign to read as positive or negative association.
 - **Less power on a plain linear trend.** For a straight line in Gaussian noise, Pearson's r is the more powerful test. D gives up some power on the one shape r was designed for, in exchange for seeing every other shape.
-- **Heavy ties at small N.** The ½ and ¼ tie credits keep D sensible with a few ties; the worked example has three people tied at 78. But heavily tied, tiny samples leave the scale: x = y = (0, 0, 0, 1, 1) is perfectly dependent and gives D = −1.84. The video's data are tie-free apart from the worked example. Pinned by `heavy_ties_at_small_n_leave_the_scale`.
+- **Heavy ties at small N.** The ½ and ¼ tie credits keep D sensible with a few ties; the worked example has three people tied at 78. But heavily tied, tiny samples leave the scale: x = y = (0, 0, 0, 1, 1) is perfectly dependent and gives D = −1.84. The video's data are tie-free apart from the worked example. [SAS's documentation](https://support.sas.com/documentation/cdl/en/procstat/68142/HTML/default/procstat_corr_details07.htm) gives the same caveat: with many ties in a small sample, D can fall below −½. Pinned by `heavy_ties_at_small_n_leave_the_scale`.
 
 ## The statistic, exactly as `stats.rs` computes it
 
@@ -104,7 +104,7 @@ D₁ = 196.25, D₂ = 10,696 and D₃ = 1,329.5. The numerator is 8·7·196.25 +
 \varphi = \tfrac14\,\psi(x_1,x_2,x_3)\,\psi(x_1,x_4,x_5)\,\psi(y_1,y_2,y_3)\,\psi(y_1,y_4,y_5), \qquad \psi(a,b,c) = \mathbf 1[b \le a] - \mathbf 1[c \le a]
 ```
 
-Point 1 is an anchor, and each ψ asks whether one partner falls below the anchor while the other does not. Chapter 3's "groups of four" is the intuition behind this; the kernel adds the anchor, for five points in all. Listing every tuple is hopeless at any real N, and the rank formula above gets the same number from per-point counts in O(N²). Without ties the two agree exactly: `rank_formula_equals_hoeffdings_u_statistic_without_ties` checks the identity by brute force over all 5-tuples. The factor 30 is the scaling used by SAS `PROC CORR` and by the article, and puts perfect monotone dependence at 1. Hoeffding's own statistic is D / 30.
+Point 1 is an anchor, and each ψ asks whether one partner falls below the anchor while the other does not. Chapter 3's "groups of four" is the intuition behind this; the kernel adds the anchor, for five points in all. Listing every tuple is hopeless at any real N, and the rank formula above gets the same number from per-point counts in O(N²). Without ties the two agree exactly: `rank_formula_equals_hoeffdings_u_statistic_without_ties` checks the identity by brute force over all 5-tuples. The factor 30 is the scaling used by [SAS `PROC CORR`](https://support.sas.com/documentation/cdl/en/procstat/68142/HTML/default/procstat_corr_details07.htm) and by the article, and puts perfect monotone dependence at 1. Hoeffding's own statistic is D / 30.
 
 ## How the gallery compares four measures fairly
 
