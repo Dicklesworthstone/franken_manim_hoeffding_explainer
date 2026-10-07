@@ -3,7 +3,7 @@
 # process per chapter, each in its own output directory (the chapters share
 # nothing, and separate dirs keep their generated chime/pad WAVs apart).
 #
-#   [OUT_ROOT=out] [GPU_COUNT=2] [HOEFFDING_ARGS="--threads 16 --encoder h264_nvenc --crf 16"] \
+#   [OUT_ROOT=out] [GPU_COUNT=2] [NARRATION=dir] [HOEFFDING_ARGS="--threads 16 --encoder h264_nvenc --crf 16"] \
 #       ./render_parallel.sh BUILD_DIR
 #
 # GPU_COUNT > 0 spreads chapters over NVENC devices round-robin (--gpu i % n).
@@ -15,7 +15,7 @@ set -u
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$ROOT"
 B="${HOEFFDING_BIN:-target/release/hoeffding}"
-N=franken_manim_hoeffding_explainer/narration
+N="${NARRATION:-franken_manim_hoeffding_explainer/narration}"
 OUT="${OUT_ROOT:-out}"
 mkdir -p "$OUT" logs
 exec >>logs_render_all.txt 2>&1
