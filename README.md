@@ -25,6 +25,108 @@ Every number on screen is computed by the scene. `stats.rs` is pinned at startup
 worked example (R, S, Q, D₁ = 196.25, D₂ = 10696, D₃ = 1329.5, D = 0.410714…) and to scipy's
 Pearson, Spearman and Kendall values. The data come from the engine's own seeded PCG64DXSM RNG.
 
+## The video at a glance
+
+![One still from each chapter of the narrated 4K cut](docs/media/chapters.jpg)
+
+One frame from each chapter, in order: the ring that fools all three correlations; the gallery's noise ceilings; why a turn needs more than pairs of points; ranks; the count Q; the three sums; the live shuffle test; and the summary.
+
+## Why Hoeffding's D
+
+![The gallery's ring: the three correlations sit inside the noise while D clears its ceiling](docs/media/gallery_ring.jpg)
+
+Pearson's r measures how well a straight line fits. Spearman's ρ and Kendall's τ measure how consistently Y rises (or falls) as X rises. All three summarize a *trend*, so all three read about zero on data that is completely structured but has no trend: a ring, an X, a parabola, a wave. The video opens on exactly that case, 150 points on a circle where r = +0.004, ρ = −0.001 and τ = 0.000.
+
+Hoeffding's D (Wassily Hoeffding, 1948) asks a different question: could X and Y be independent at all? In the population it measures
+
+```math
+\iint \big(F(x,y) - F_1(x)\,F_2(y)\big)^2 \, dF(x,y)
+```
+
+the squared gap between the joint distribution and the product of its marginals, weighted by where the data lies. For continuous distributions that gap is zero only under independence, so D responds to any form of dependence, not just to monotone trends.
+
+| Property | What it means in practice | Pinned by the test |
+|---|---|---|
+| Uses only ranks | Unchanged by any strictly increasing transform of X or of Y, and by reflecting either axis. Units, skew and outliers don't matter; only the order does. | `d_is_invariant_under_strictly_monotone_and_reflecting_transforms` |
+| Symmetric | D(X, Y) = D(Y, X), and the order of the (x, y) pairs is irrelevant. | `d_is_symmetric_and_ignores_the_order_of_the_pairs` |
+| Monotone dependence scores 1 | Any perfectly increasing *or* decreasing relationship gives exactly 1. | `perfect_monotone_dependence_scores_exactly_one` |
+| Centered at 0 under independence | D averages 0 when X and Y are independent; a single sample scatters around 0 and can be slightly negative. | `d_averages_to_zero_under_independence` |
+| Bounded below | For tie-free data, D ≥ −½, and N = 5 reaches it. | `d_stays_within_the_narrated_range` |
+
+What it costs:
+
+- **N ≥ 5.** The statistic is built from groups of five points, so it is undefined for smaller samples.
+- **Quadratic time as written.** Each Qᵢ scans every other point, so `stats::hoeffding` is O(N²). That is plenty for N = 150 and for the 2,000-shuffle test. O(N log N) algorithms exist for large N.
+- **No direction.** D says *that* X and Y are dependent, not *how*. There is no sign to read as positive or negative association.
+- **Less power on a plain linear trend.** For a straight line in Gaussian noise, Pearson's r is the more powerful test. D gives up some power on the one shape r was designed for, in exchange for seeing every other shape.
+- **Heavy ties at small N.** The ½ and ¼ tie credits keep D sensible with a few ties; the worked example has three people tied at 78. But heavily tied, tiny samples leave the scale: x = y = (0, 0, 0, 1, 1) is perfectly dependent and gives D = −1.84. The video's data are tie-free apart from the worked example. Pinned by `heavy_ties_at_small_n_leave_the_scale`.
+
+## The statistic, exactly as `stats.rs` computes it
+
+For N pairs (xᵢ, yᵢ):
+
+1. **Ranks.** Rᵢ is the rank of xᵢ among the x values, and Sᵢ the rank of yᵢ, both starting at 1. Tied values share the average of the places they span, so three people tied for places 8, 9 and 10 all get rank 9.
+2. **The bivariate count Q.** For each point, count the points strictly below and to the left of it in rank space, plus one, with half credit for a tie in one coordinate and a quarter for an exact twin:
+
+   ```math
+   Q_i = 1 + \#\{j : R_j < R_i,\ S_j < S_i\} + \tfrac12\#\{j : R_j = R_i,\ S_j < S_i\} + \tfrac12\#\{j : R_j < R_i,\ S_j = S_i\} + \tfrac14\#\{j \ne i : R_j = R_i,\ S_j = S_i\}
+   ```
+
+   If X and Y were independent, a point at (Rᵢ, Sᵢ) would expect about (Rᵢ − 1)(Sᵢ − 1)/(N − 1) points below and to its left. Chapter 5 sets each observed count against that baseline.
+3. **Three sums.**
+
+   ```math
+   D_1 = \sum_i (Q_i-1)(Q_i-2), \qquad D_2 = \sum_i (R_i-1)(R_i-2)(S_i-1)(S_i-2), \qquad D_3 = \sum_i (R_i-2)(S_i-2)(Q_i-1)
+   ```
+
+   D₁ measures how tightly the points pile up below and to the left of one another, D₂ depends only on the marginals, and D₃ is the cross term that ties the two together.
+4. **Normalization.**
+
+   ```math
+   D = 30 \cdot \frac{(N-2)(N-3)\,D_1 + D_2 - 2(N-2)\,D_3}{N(N-1)(N-2)(N-3)(N-4)}
+   ```
+
+The article's worked example, which chapters 4–6 animate and `self_check` pins:
+
+| | | | | | | | | | | |
+|---|---|---|---|---|---|---|---|---|---|---|
+| height x | 55 | 62 | 68 | 70 | 72 | 65 | 67 | 78 | 78 | 78 |
+| weight y | 125 | 145 | 160 | 156 | 190 | 150 | 165 | 250 | 250 | 250 |
+| R | 1 | 2 | 5 | 6 | 7 | 3 | 4 | 9 | 9 | 9 |
+| S | 1 | 2 | 5 | 4 | 7 | 3 | 6 | 9 | 9 | 9 |
+| Q | 1 | 2 | 4 | 4 | 7 | 3 | 4 | 8.5 | 8.5 | 8.5 |
+
+D₁ = 196.25, D₂ = 10,696 and D₃ = 1,329.5. The numerator is 8·7·196.25 + 10,696 − 2·8·1,329.5 = 414, the denominator is 10·9·8·7·6 = 30,240, and D = 30 · 414 / 30,240 = 0.410714… For comparison, r = 0.9307, ρ = 0.9503 and τ-b = 0.8571.
+
+**Where the formula comes from.** Hoeffding defined D as a U-statistic: the average, over every ordered choice of five distinct points, of the kernel
+
+```math
+\varphi = \tfrac14\,\psi(x_1,x_2,x_3)\,\psi(x_1,x_4,x_5)\,\psi(y_1,y_2,y_3)\,\psi(y_1,y_4,y_5), \qquad \psi(a,b,c) = \mathbf 1[b \le a] - \mathbf 1[c \le a]
+```
+
+Point 1 is an anchor, and each ψ asks whether one partner falls below the anchor while the other does not. Chapter 3's "groups of four" is the intuition behind this; the kernel adds the anchor, for five points in all. Listing every tuple is hopeless at any real N, and the rank formula above gets the same number from per-point counts in O(N²). Without ties the two agree exactly: `rank_formula_equals_hoeffdings_u_statistic_without_ties` checks the identity by brute force over all 5-tuples. The factor 30 is the scaling used by SAS `PROC CORR` and by the article, and puts perfect monotone dependence at 1. Hoeffding's own statistic is D / 30.
+
+## How the gallery compares four measures fairly
+
+The four measures don't share a scale: |r| = 0.2 and D = 0.02 can be the same strength of evidence. So chapter 2 never compares raw values. Each bar is the measure divided by its own noise ceiling: the 99th percentile of |measure| over 300 shuffles of Y on the same cloud (`stats::null_q99`). Shuffling Y keeps both marginals exactly and destroys only the pairing, so the ceiling is what that measure reads on these very points when X and Y are independent by construction. A bar past the dashed line is beyond what 99% of shuffles produce, and bars saturate at five ceilings.
+
+The values behind the bars, as `hoeffding stats` prints them (ceilings in parentheses):
+
+| Shape | Pearson r | Spearman ρ | Kendall τ | Hoeffding's D |
+|---|---|---|---|---|
+| Line | **+0.991** (0.230) | **+0.991** (0.230) | **+0.920** (0.154) | **+0.8087** (0.0130) |
+| Parabola | −0.014 (0.200) | −0.007 (0.187) | −0.014 (0.125) | **+0.1710** (0.0098) |
+| Ring | −0.012 (0.226) | −0.013 (0.215) | −0.010 (0.153) | **+0.0375** (0.0131) |
+| X (cross) | −0.003 (0.196) | −0.002 (0.197) | −0.006 (0.134) | **+0.0308** (0.0101) |
+| Wave | −0.005 (0.211) | +0.000 (0.220) | −0.003 (0.147) | **+0.0274** (0.0137) |
+| Pure noise | −0.017 (0.190) | −0.018 (0.180) | −0.014 (0.120) | −0.0029 (0.0112) |
+
+Bold marks a value beyond its ceiling. D's ceilings sit near 0.01 because D concentrates tightly around zero under independence, which is exactly why raw values can't be compared across measures. On the parabola, D is 17 times its ceiling.
+
+`the_gallery_narration_is_true_for_the_rendered_data` asserts what the narration says about each shape against these exact numbers: every measure clears its ceiling on the line, only D clears it on the parabola, ring, X and wave, and nothing clears it on pure noise.
+
+Chapter 7 turns the same idea into a formal permutation test. After 2,000 shuffles of Y, none reaches the observed D.
+
 ## Narration: the picture follows the voice
 
 - `src/narration.rs` holds the whole script: 61 lines, each keyed to the beat that triggers it.
@@ -104,3 +206,100 @@ fmn-python portal/hoeffding_portal.py RingHook ShuffleLiveD --format mp4 \
 - Native `Axes` cannot be repositioned with `c2p` following (bead `fm-native-axes-reposition-n1yd`), so the scenes use a small `Frame2` data-window helper (`kit.rs`).
 - There is no 2D camera pan or zoom on the fast retained route, so the scenes have none.
 - Frames render serially (bead `fm-sq8.5`), so a 4K render uses about 1–2 cores of 14. The final cut took roughly an hour.
+
+## Architecture
+
+```text
+ stats.rs ───────────── numbers ───────────────┐
+                                               ▼
+ narration WAVs ── Narrator::say ──┐   chapters/*.rs: eight scenes built from
+ sound.rs pad + chimes ────────────┤   mobjects, animations and live readouts
+                                   ▼               │
+                         Scene::add_sound          ▼
+                                   └──── fmn Stage / Scene
+                                               │
+                                               ▼
+                 fmn::render: rasterize every frame, mix the audio, and encode
+                 with ffmpeg behind the sandboxed process boundary
+                 (encode.rs adds CRF or NVENC CQ, preset, 256k AAC)
+                                               │
+                                               ▼
+                             OUT/<chapter>.mp4, one per chapter
+                                               │
+                                  master.sh: join + loudness
+                                               ▼
+                              hoeffdings_d_explainer_4k.mp4
+```
+
+| Module | Responsibility |
+|---|---|
+| `src/main.rs` | The `hoeffding` CLI (`hoeffding help` lists every option). `render` builds each chapter as its own scene and MP4, which keeps every ffmpeg job short. It applies the quality options and retries a chapter after the transient Darwin EPERM race. |
+| `src/chapters/` | The eight scenes, each a `SceneConstruct`, listed in `registry()`. `glyphs.rs` is a typesetting probe sheet, not a chapter. |
+| `src/kit.rs` | The shared scene kit. It holds the palette and the text and TeX helpers, including the span maps `TransformMatchingTex` needs. The `live_number` and `live_bar` readouts are built on `always_redraw`. It also provides the `Frame2` data window, `play!` with the `Timed` trait for timing, and `fade_all`. |
+| `src/stats.rs` | Ranks, Q, D₁–D₃ and D; Pearson, Spearman and Kendall τ-b. It also holds the seeded shape generator, the permutation-test noise ceilings and `self_check`. |
+| `src/narration.rs` | The script, one `(id, text)` pair per line, and the `Narrator` that places each line's WAV on the timeline. |
+| `src/sound.rs` | The score: a chord pad per chapter and bell chimes, synthesized as 48 kHz WAVs in plain Rust. |
+| `src/encode.rs` | Delivery-quality ffmpeg arguments, injected by wrapping the `FfmpegCapability` process runner. |
+
+**Live readouts.** Values that change during an animation are not keyframed. `always_redraw` closures rebuild each readout from the current state on every frame. Chapter 2's bars follow value trackers. Chapter 7 recomputes D, the 4×4 joint counts and the marginal rugs from the dots' current positions, so the number on screen is always the statistic of the picture on screen.
+
+**Determinism.** All random data come from franken_manim's PCG64DXSM generator, which is bit-exact with NumPy's. Each gallery shape has its own seed (1000 plus the shape's index), and the noise ceilings use seed 99. So every render shows the same numbers, and `hoeffding stats` prints them.
+
+## Design principles
+
+1. **Numbers are computed, then pinned.** Every statistic on screen comes from `stats.rs` applied to the data the scene draws. `self_check` runs before every command. It stops the program before the first frame if the worked example drifts from the article (R, S, Q, D₁, D₂, D₃, D) or from scipy (r, ρ, τ). Chapter 6's TeX also has a few typed literals: N = 10, the substituted sums, and 414 / 30,240. `cargo test` checks those against the computation.
+2. **The narration's claims are tests.** What the voice says about the data is asserted against the exact data the video renders. That includes "one for a perfectly monotone relationship", "never below minus one half", "for a straight line, everyone agrees" and "the correlations sit right inside the noise".
+3. **The voice sets the pace.** Scenes are written as beats keyed to script lines, not as timelines in seconds, so re-recording a line re-times the picture. See [Narration](#narration-the-picture-follows-the-voice).
+4. **One external tool, behind one boundary.** ffmpeg is the only subprocess. It runs only through franken_manim's sandboxed process boundary, with a cleared environment and limits on wall-clock time and output. Delivery quality comes from wrapping that boundary's runner, not from going around it.
+5. **Engine gaps are worked around in the open.** Every limitation this project hit is filed upstream as a bead. Each one is listed under [Known engine limitations](#known-engine-limitations-worked-around), with the workaround used here.
+6. **Chapters are independent.** Each chapter renders to its own MP4 from its own scene state. So chapters can be rendered in parallel (`render_parallel.sh`) or one at a time, then joined at the end.
+
+## Tests
+
+```bash
+cargo test
+```
+
+The suite renders nothing, so it needs no ffmpeg, fonts or narration. It does compile the franken_manim crates, like any build.
+
+| Module | Tests | What they pin |
+|---|---|---|
+| `stats` | 13 | The article's worked example and the fraction chapter 6 types (414 / 30,240). Equality with Hoeffding's brute-force U-statistic. Invariance under monotone transforms and reflections, symmetry, and pair order. D = 1 for monotone data. The [−½, 1] range for tie-free data, over every ordering of N = 5, 6 and 7, and how heavy ties break it. A zero mean under shuffling. The gallery narration on the rendered data. The counting and shuffling helpers. |
+| `encode` | 7 | The ffmpeg argument contract: x264 gets CRF, preset and `-tune animation`. NVENC gets p7 constant quality and `-gpu`, never the x264 preset. Stream copies are untouched, the AAC bitrate is added once, and timeouts are only ever raised. |
+| `main` | 5 | CLI parsing, including the exact invocation `render_parallel.sh` makes. A typo is an error, not a chapter name. |
+
+Beyond `cargo test`, `self_check` guards every run, and the narration is checked by transcribing it against the script (see [Narration](#narration-the-picture-follows-the-voice)).
+
+## Repository layout
+
+```text
+src/                 the renderer (see Architecture)
+  chapters/          one file per chapter, plus glyphs.rs
+narration_lab/       the voice-over pipeline (see Narration)
+portal/              two segments as plain manimlib code for the fmn-python portal
+perf/                profiler hotspot summaries from 4K renders, and attribute.py
+docs/media/          README stills taken from the 4K cut
+narrate.sh           the original one-take voice-over, one WAV per line
+qa_narration.py      transcribe each line with franken_whisper and diff it with the script
+master.sh            join the chapters and master the loudness
+render_parallel.sh   one render process per chapter, optionally spread across GPUs
+```
+
+The repository holds no rendered video or audio, narration WAVs, or franken_whisper QA database. They are generated locally and gitignored, and at about 200 MB the 4K cut is over GitHub's 100 MB file limit.
+
+## Building from a fresh clone
+
+```bash
+git clone https://github.com/Dicklesworthstone/franken_manim
+git clone https://github.com/Dicklesworthstone/franken_manim_hoeffding_explainer
+cd franken_manim_hoeffding_explainer
+cargo test                    # rustup fetches the pinned nightly first
+cargo build --release
+target/release/hoeffding stats
+target/release/hoeffding render 01_hook --res 960x540 --fps 30 --silent --out draft
+```
+
+- The two checkouts must sit side by side, and franken_manim's directory must be called `franken_manim`. `Cargo.toml` depends on `../franken_manim/crates/fmn` by path.
+- `Cargo.lock` and the test suite were last verified against franken_manim [`7ef2eac2`](https://github.com/Dicklesworthstone/franken_manim/commit/7ef2eac21d4e). If franken_manim has moved on, check out that revision, or let `cargo build` (without `--locked`) re-resolve.
+- `render` needs `ffmpeg` on `PATH`. `stats`, `script` and `cargo test` don't.
+- A narrated render also needs the voice-over WAVs. They are generated, not committed; see [Narration](#narration-the-picture-follows-the-voice).
