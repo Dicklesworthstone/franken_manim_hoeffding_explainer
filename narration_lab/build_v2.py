@@ -18,9 +18,12 @@ intonation, and hard names get mangled. So:
   movement, and the sentence-final contour (statements fall, yes/no
   questions rise);
 - the winning read is edited: hesitations that the script doesn't license are
-  tightened, comma pauses are capped at a natural phrase break, a rushed read
-  is slowed gently (at most 12%, formant-preserving rubberband), and the level
-  is matched;
+  tightened, comma pauses are capped at a natural phrase break, and its EBU
+  R128 loudness is matched. Nothing is time-stretched: phase-vocoder slowing
+  (rubberband) left audible phasiness and echo on the slowed sentences, so a
+  rushed read gets a longer breath after it instead;
+- each line passes a transparent lookahead peak limiter, so the final master
+  is one fixed gain (loudnorm's dynamic fallback rode the level audibly);
 - sentences are joined with gaps chosen by meaning: a beat after a question
   and before a turn ("But", "So", "Now"), a quick join into a short payoff.
 
@@ -71,6 +74,11 @@ ACCEPT = {
     "by": {"x"},
 }
 ALIAS = {heard: canon for canon, forms in ACCEPT.items() for heard in forms}
+# A misheard name costs more than its share of the match ratio: one wrong
+# name in a long sentence is still the line the listener remembers.
+NAMES = {w.lower() for w in SPELLINGS}
+NAME_PENALTY = 0.25
+HESITATION_PENALTY = 0.03
 PHRASES = [("frank and", "franken"), ("frank in", "franken"), ("a hundred", "one hundred"),
            ("a thousand", "one thousand"), ("4x4", "four by four"), ("-0.5", "minus one half")]
 ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
@@ -81,11 +89,12 @@ TURN_WORDS = ("but ", "so ", "now ", "and finally", "then ", "once again", "in t
               "look at", "next,", "the trade-off")
 
 SYL_TARGET, SYL_SIGMA = 4.4, 0.6   # articulation rate (syllables/s, pauses excluded): a calm, measured read
-SYL_MAX = 4.75                      # faster than this gets slowed
-STRETCH_FLOOR = 0.88                # never slow by more than 12%
+SYL_MAX = 4.75                      # a read faster than this earns a longer breath after it
+FAST_EXTRA_GAP = 0.10               # ...this much, in seconds (pace comes from pauses, never stretching)
 COMMA_PAUSE_CAP = 0.36              # a phrase break at a comma
 OTHER_PAUSE_CAP = 0.14              # a hesitation the script doesn't license
-TARGET_RMS_DB = -20.0
+SENTENCE_LUFS = -23.0               # every sentence matched to this EBU R128 integrated loudness
+LIMIT_HEADROOM_DB = 15.0            # limiter ceiling above speech loudness: only plosive bursts reach it
 RATE = 24000
 
 
@@ -192,21 +201,19 @@ def gap_between(prev, nxt):
 def align(want, heard):
     """Match ratio between script and transcript, forgiving compound spellings
     ("scatter plot" vs "scatterplot", "t t s" vs "tts") but not mishearings,
-    plus a map from heard index to script index."""
+    plus a map from heard index to script index and the matched script indices."""
     sm = difflib.SequenceMatcher(None, want, heard, autojunk=False)
-    matched, heard_len, to_want = 0, len(heard), {}
+    matched, heard_len, to_want, hit = 0, len(heard), {}, set()
     for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            matched += i2 - i1
-            to_want.update({j1 + d: i1 + d for d in range(j2 - j1)})
-        elif tag == "replace" and "".join(want[i1:i2]) == "".join(heard[j1:j2]):
+        if tag == "equal" or (tag == "replace" and "".join(want[i1:i2]) == "".join(heard[j1:j2])):
             matched += i2 - i1
             heard_len += (i2 - i1) - (j2 - j1)
-            to_want.update({j: i2 - 1 for j in range(j1, j2)})
+            hit.update(range(i1, i2))
+            to_want.update({j: min(i2 - 1, i1 + (j - j1)) for j in range(j1, j2)})
         elif i2 > i1:
             to_want.update({j: min(i2 - 1, i1 + (j - j1)) for j in range(j1, j2)})
     total = len(want) + heard_len
-    return (2 * matched / total if total else 1.0), to_want
+    return (2 * matched / total if total else 1.0), to_want, hit
 
 
 # ------------------------------------------------------------------ audio
@@ -283,7 +290,12 @@ def analyze(path, asr, target_text):
     for w in asr.get("words", []):
         for t, _ in tokens(w["w"]):
             heard_tok.append((t, w["s"], w["e"], w["p"]))
-    ratio, to_want = align(want, [t for t, *_ in heard_tok])
+    # Score the whole transcript (Whisper's per-word tokens split numbers like
+    # "0.41" and phrases like "frank and"); use the words only for timing.
+    heard_text = [t for t, _ in tokens(asr.get("text", ""))]
+    ratio, _, hit = align(want, heard_text)
+    misheard_names = sum(1 for i, w in enumerate(want) if w.rstrip("s") in NAMES and i not in hit)
+    _, to_want, _ = align(want, [t for t, *_ in heard_tok])
     # Classify each internal silence by the script punctuation before it.
     pauses = []
     for a, b in silent_runs(db, thresh, first, last):
@@ -300,7 +312,11 @@ def analyze(path, asr, target_text):
     pitch_std, final_st = 0.0, 0.0
     if len(voiced_f0) > 10:
         st = 12 * np.log2(voiced_f0 / np.median(voiced_f0))
-        st = st[np.abs(st) < 12]
+        # Autocorrelation trackers jump an octave at fricative and stop onsets
+        # ("sh", "ch", "t"); a calm read never moves 7+ semitones off its
+        # median, so fold those frames back by whole octaves.
+        st = np.where(np.abs(st) > 7, st - 12 * np.round(st / 12), st)
+        st = st[np.abs(st) < 7]
         if len(st) > 8:
             pitch_std = float(np.std(st))
             final_st = float(np.median(st[-6:]))
@@ -317,10 +333,15 @@ def analyze(path, asr, target_text):
     s_pause = 1.0 / (1.0 + sum(p["len"] for p in hesitations) * 3)
     s_pitch = pitch_std / 1.2 if pitch_std < 1.2 else (max(0.0, 1 - (pitch_std - 6.5) / 4) if pitch_std > 6.5 else 1.0)
     score = 0.40 * ratio + 0.15 * s_conf + 0.15 * s_rate + 0.10 * s_pause + 0.10 * s_pitch + 0.10 * s_contour
+    score -= NAME_PENALTY * misheard_names
+    # A phrase break the script doesn't license reads as a misparse ("ties in,
+    # one coordinate"); tightening the gap leaves its boundary prosody behind.
+    score -= HESITATION_PENALTY * len(hesitations)
     if ratio < 0.85:
         score -= 0.5
     return {
-        "score": round(score, 4), "asr_ratio": round(ratio, 3), "conf": round(float(np.mean(probs)), 3),
+        "score": round(score, 4), "asr_ratio": round(ratio, 3), "misheard_names": misheard_names,
+        "conf": round(float(np.mean(probs)), 3),
         "syl_rate": round(syl_rate, 2), "pauses": pauses, "hesitations": len(hesitations),
         "pitch_std_st": round(pitch_std, 2), "final_st": round(final_st, 2),
         "start": round(start_s, 3), "end": round(end_s, 3), "heard": asr.get("text", ""),
@@ -339,8 +360,44 @@ def crossfade_join(parts, rate=RATE, fade=0.01):
     return out
 
 
+def integrated_lufs(x):
+    """EBU R128 integrated loudness of a mono segment (ffmpeg ebur128), or None
+    when it is too short to gate (under ~0.4 s)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = Path(tmp) / "s.wav"
+        write_wav(wav, x)
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-nostats", "-i", str(wav), "-af", "ebur128",
+                              "-f", "null", "-"], capture_output=True, text=True).stderr
+    found = re.search(r"I:\s+(-?[\d.]+) LUFS", out[out.rfind("Summary"):])
+    lufs = float(found.group(1)) if found else -70.0
+    return lufs if lufs > -69.0 else None
+
+
+def limit_peaks(x, ceiling, look=0.005, release=0.08, rate=RATE):
+    """Lookahead peak limiter. The gain never lets |x| exceed `ceiling`: a
+    centred minimum over `look` followed by a moving average over the same
+    window is at most the required gain at every sample. Recovery is
+    exponential over `release`. Returns (y, fraction of time reduced by more
+    than 0.5 dB, max reduction dB)."""
+    need = np.minimum(1.0, ceiling / np.maximum(np.abs(x), 1e-12))
+    if need.min() >= 1.0:
+        return x, 0.0, 0.0
+    w = int(look * rate) | 1
+    p = w // 2
+    gmin = np.lib.stride_tricks.sliding_window_view(np.pad(need, p, constant_values=1.0), w).min(axis=1)
+    gavg = np.convolve(np.pad(gmin, p, constant_values=1.0), np.ones(w) / w, mode="valid")
+    # Release as a running max of exponentially decaying reduction, in log
+    # space: r[n] = max_m red[m] * exp(-(n - m) / tau).
+    red, tau, n = 1.0 - gavg, release * rate, np.arange(len(x))
+    with np.errstate(divide="ignore"):
+        held = np.exp(np.maximum.accumulate(np.log(red) + n / tau) - n / tau)
+    held[held < 1e-3] = 0.0  # end the release once it is under 0.01 dB
+    gain = 1.0 - np.maximum(held, red)
+    return x * gain, float(np.mean(gain < 10 ** (-0.5 / 20))), float(-20 * np.log10(gain.min()))
+
+
 def edit(path, m):
-    """Cut the winning read: tighten pauses, slow a rushed read, match level."""
+    """Cut the winning read: tighten pauses, match loudness. No stretching."""
     x, rate = load(path)
     assert rate == RATE, f"{path}: {rate} Hz"
     lead = max(0.0, m["start"] - 0.05)
@@ -359,23 +416,15 @@ def edit(path, m):
         pos = b
     parts.append(x[int(pos * rate):int(tail * rate)])
     seg = crossfade_join(parts)
-    tempo = 1.0
-    if m["syl_rate"] > SYL_MAX:
-        tempo = max(STRETCH_FLOOR, (SYL_MAX - 0.2) / m["syl_rate"])
-        with tempfile.TemporaryDirectory() as tmp:
-            a, b = Path(tmp) / "a.wav", Path(tmp) / "b.wav"
-            write_wav(a, seg)
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(a), "-af",
-                            f"rubberband=tempo={tempo:.4f}:formant=preserved:pitchq=quality", str(b)], check=True)
-            seg, _ = load(b)
-    db = frame_db(seg, rate)
-    loud = db[db > db.max() - 25]
-    level = float(np.mean(loud)) if len(loud) else -30.0
-    seg = seg * 10 ** ((TARGET_RMS_DB - level) / 20)
+    lufs = integrated_lufs(seg)
+    if lufs is None:  # too short to gate: RMS of the loud frames stands in
+        db = frame_db(seg, rate)
+        lufs = float(np.mean(db[db > db.max() - 25])) - 3.0
+    seg = seg * 10 ** ((SENTENCE_LUFS - lufs) / 20)
     fade = int(0.03 * rate)
     seg[:fade] *= np.linspace(0, 1, fade)
     seg[-fade:] *= np.linspace(1, 0, fade)
-    return seg, tempo, round(removed, 2)
+    return seg, round(removed, 2), round(lufs, 1)
 
 
 # --------------------------------------------------------------- commands
@@ -414,8 +463,8 @@ def cmd_choose(args):
     out.mkdir(parents=True, exist_ok=True)
     plan = json.loads((work / "plan.json").read_text())
     asr = json.loads((work / "asr.json").read_text())
-    report, weak = {}, []
-    review = ["line\tsent\tscore\tasr\tsyl/s\ttempo\tcut_s\thesit\tpitch_sd\tfinal_st\ttts\theard"]
+    report, weak, lines = {}, [], {}
+    review = ["line\tsent\tscore\tasr\tsyl/s\tlufs_in\tcut_s\thesit\tpitch_sd\tfinal_st\ttts\theard"]
     for line_id, sents in plan.items():
         pieces, chosen = [], []
         for s in sents:
@@ -431,33 +480,46 @@ def cmd_choose(args):
                 sys.exit(f"no usable read for {line_id} sentence {s['j']}")
             cands.sort(key=lambda c: -c[0])
             _, best_wav, best, r = cands[0]
-            seg, tempo, removed = edit(best_wav, best)
-            chosen.append({"sentence": r["text"], "tts": r["tts"], "read": r["tag"], "tempo": round(tempo, 3),
+            seg, removed, lufs_in = edit(best_wav, best)
+            chosen.append({"sentence": r["text"], "tts": r["tts"], "read": r["tag"], "lufs_in": lufs_in,
                            "pause_cut_s": removed, **best,
                            "others": [{"tts": rr["tts"], "score": m["score"], "heard": m["heard"]}
                                       for _, _, m, rr in cands[1:]]})
-            review.append(f"{line_id}\t{s['j']}\t{best['score']}\t{best['asr_ratio']}\t{best['syl_rate']}\t{tempo:.3f}\t"
+            review.append(f"{line_id}\t{s['j']}\t{best['score']}\t{best['asr_ratio']}\t{best['syl_rate']}\t{lufs_in}\t"
                           f"{removed}\t{best['hesitations']}\t{best['pitch_std_st']}\t{best['final_st']}\t"
                           f"{r['tts']}\t{best['heard']}")
-            if best["asr_ratio"] < 0.9 or best["hesitations"] or best["syl_rate"] > SYL_MAX / STRETCH_FLOOR \
+            if best["asr_ratio"] < 0.9 or best["misheard_names"] or best["hesitations"] or best["syl_rate"] > SYL_MAX + 0.6 \
                     or best["syl_rate"] < 3.4 or best["pitch_std_st"] < 1.2 or best["score"] < 0.8:
                 weak.append(f"{r['tag']}: score {best['score']} ratio {best['asr_ratio']} syl/s {best['syl_rate']} "
                             f"hesitations {best['hesitations']} final {best['final_st']} | {r['tts']!r} -> {best['heard']!r}")
-            pieces.append((seg, r["text"]))
+            pieces.append((seg, r["text"], best["syl_rate"]))
         audio = []
-        for i, (seg, text) in enumerate(pieces):
+        for i, (seg, text, syl_rate) in enumerate(pieces):
             audio.append(seg)
             if i + 1 < len(pieces):
-                audio.append(np.zeros(int(gap_between(text, pieces[i + 1][1]) * RATE)))
-        write_wav(out / f"{line_id}.wav", np.concatenate(audio))
+                gap = gap_between(text, pieces[i + 1][1]) + (FAST_EXTRA_GAP if syl_rate > SYL_MAX else 0.0)
+                audio.append(np.zeros(int(gap * RATE)))
+        lines[line_id] = np.concatenate(audio)
         report[line_id] = chosen
+    # Speech peaks sit ~17 dB (median) above its loudness. At loudness + 15 dB
+    # the limiter reduces >1 dB for ~1.2% of the time, all on plosive bursts
+    # ("tick", "Step", "count"; measured with limiter_sweep.py / peak_probe.py),
+    # so the master needs only one fixed gain.
+    ceiling = 10 ** ((SENTENCE_LUFS + LIMIT_HEADROOM_DB) / 20)
+    limited, worst = [], 0.0
+    for line_id, a in lines.items():
+        y, frac, max_db = limit_peaks(a, ceiling)
+        assert np.max(np.abs(y)) <= ceiling * 1.0001, line_id
+        limited.append(frac)
+        worst = max(worst, max_db)
+        write_wav(out / f"{line_id}.wav", y)
     (out / "report.json").write_text(json.dumps(report, indent=1))
     (out / "review.tsv").write_text("\n".join(review) + "\n")
     reads = [c for line in report.values() for c in line]
-    stretched = [c["tempo"] for c in reads if c["tempo"] < 1.0]
-    print(f"assembled {len(report)} lines from {len(reads)} sentences -> {out}")
-    print(f"median articulation {np.median([c['syl_rate'] for c in reads]):.2f} syl/s; "
-          f"{len(stretched)} reads slowed (median tempo {np.median(stretched) if stretched else 1:.3f}); "
+    print(f"assembled {len(report)} lines from {len(reads)} sentences -> {out}; sentences at {SENTENCE_LUFS} LUFS, "
+          f"limiter at {SENTENCE_LUFS + LIMIT_HEADROOM_DB:.0f} dBFS reduced >0.5 dB for {100 * np.mean(limited):.2f}% of the time "
+          f"(max {worst:.1f} dB)")
+    print(f"median articulation {np.median([c['syl_rate'] for c in reads]):.2f} syl/s; nothing time-stretched; "
           f"{sum(c['pause_cut_s'] for c in reads):.1f} s of pauses tightened")
     print(f"{len(weak)} sentences flagged:")
     for w in weak:

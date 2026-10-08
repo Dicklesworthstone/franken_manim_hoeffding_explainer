@@ -53,7 +53,7 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "g4",
-        "Now, bend it into a parabola. The three correlations collapse. The falling left half cancels out the rising right half. But Hoeffding's D barely flinches.",
+        "Now, bend it into a parabola. The three correlations collapse into the noise. The falling left half cancels out the rising right half. But Hoeffding's D barely moves.",
     ),
     (
         "g5",
@@ -65,7 +65,7 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "g7",
-        "Now an X shape, two lines with opposite slopes. Once again, the correlations see nothing. D sees it clearly.",
+        "Now, an X shape, made of two lines with opposite slopes. Once again, the correlations see nothing. D sees it clearly.",
     ),
     ("g8", "A wave, rising and falling twice. Same story."),
     (
@@ -142,7 +142,7 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "c2",
-        "That count, plus one, is called Q. A point that ties in one coordinate earns half credit. An exact twin earns a quarter.",
+        "That count, plus one, is called Q. A point tied in one coordinate earns half credit. An exact twin counts for just a quarter.",
     ),
     (
         "c3",
@@ -158,7 +158,7 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "c6",
-        "Now one of our tied people, at rank nine, nine. Seven points lie strictly below and to the left. The two twins add a quarter each, for a total of eight and a half.",
+        "Now take one of the tied people, ranked ninth in both. Seven points sit strictly below and to the left. Its two twins add a quarter each. So Q is one plus seven plus a half. That's eight and a half.",
     ),
     (
         "c7",
@@ -166,12 +166,12 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "c8",
-        "Hoeffding's D adds up how far these observed counts stray from what independence would predict.",
+        "Hoeffding's D adds up how much these counts differ from what independence would predict.",
     ),
     // 6 — the formula
     (
         "f1",
-        "Step three folds everything into three sums. The first one, D one, runs over the Q values. It measures how tightly the points pile up, below and to the left of one another.",
+        "Step three folds everything into three separate sums. The first one, D one, runs over the Q values. It measures how tightly the points pile up, below and to the left of one another.",
     ),
     (
         "f2",
@@ -185,7 +185,7 @@ pub const SCRIPT: &[(&str, &str)] = &[
         "f4",
         "Hoeffding's formula weighs these three against each other, and normalizes by the sample size.",
     ),
-    ("f5", "Now let's plug in our ten people."),
+    ("f5", "Now, let's plug in our ten people."),
     (
         "f6",
         "The numerator works out to four hundred and fourteen. And D comes out to about zero point four one.",
@@ -205,7 +205,7 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "s2",
-        "The tick marks along the edges are the marginals. They show where the X values fall, and where the Y values fall, each on its own.",
+        "These tick marks along the edges are called the marginals. They show where the X values fall, and where the Y values fall, each on its own.",
     ),
     (
         "s3",
@@ -223,10 +223,10 @@ pub const SCRIPT: &[(&str, &str)] = &[
         "s6",
         "Look at the tick marks. They haven't changed at all. Both marginals are exactly the same. Only the pairing is gone. The grid flattens out, and D drops to essentially zero.",
     ),
-    ("s7", "Put them back, and D comes right back too."),
+    ("s7", "Put the pairs back together, and D comes right back."),
     (
         "s8",
-        "That gives us a test. Shuffle two thousand times, and record D each time. Chance alone produces this narrow pile near zero.",
+        "That gives us a test. We shuffle two thousand times, and record D each time. Chance alone produces this narrow pile near zero.",
     ),
     (
         "s9",
@@ -243,18 +243,21 @@ pub const SCRIPT: &[(&str, &str)] = &[
     ),
     (
         "o3",
-        "It's symmetric. It's built on ranks, so it shrugs off outliers. Its price is that it reasons about groups of points, rather than pairs. And that's a price well worth paying, whenever the shape of a relationship matters.",
+        "It's symmetric. It's built on ranks, so it shrugs off outliers. The trade-off is that it looks at groups of points, rather than pairs. And that's a trade well worth making, whenever the shape of a relationship matters.",
     ),
     (
         "o4",
-        "Every frame, every formula, and every number in this video was rendered by franken manim, a pure Rust rebuild of manim. And this narration was spoken by franken T T S.",
+        "Every frame, every formula, and every number in this video was rendered by franken manim, a pure Rust rebuild of manim. And the narration you're hearing was spoken by franken T T S.",
     ),
 ];
 
 /// Silence between consecutive lines (a paragraph pause), seconds.
 const BREATH: f64 = 0.6;
-/// Narration level in dB (the score sits well below it).
-const GAIN_DB: f64 = 0.0;
+/// Narration level in dB (the score sits well below it). The edited
+/// narration (narration_lab, `narration_v5`) is −23.3 LUFS with peaks
+/// limited to −8 dBFS; the raw v1 reads were −32.7 LUFS. −9.4 dB keeps the
+/// voice/score balance of the v1 cut; mastering applies one fixed gain.
+const GAIN_DB: f64 = -9.4;
 
 /// Duration of a PCM WAV from its header.
 pub fn wav_seconds(path: &Path) -> std::io::Result<f64> {

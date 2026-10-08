@@ -1,12 +1,14 @@
 # Hoeffding's D: a franken_manim explainer
 
-A 3Blue1Brown-style explainer of **Hoeffding's D**, about 7½ minutes long and narrated. It was written entirely against
+A 3Blue1Brown-style explainer of **Hoeffding's D**, about 8½ minutes long and narrated. It was written entirely against
 [franken_manim](../franken_manim)'s native Rust front door, with no Python and no LaTeX.
 The voice-over is spoken by [FrankenTTS](../frankentts) in the **robert** voice, and ffmpeg
-is used only for the encode, the final join and loudness normalization.
+is used only for the encode, the final join and one fixed mastering gain.
 
-**Final video:** `renders/final_4k_narrated/hoeffdings_d_explainer_4k.mp4`, at 3840×2160, 60 fps, H.264 High (NVENC p7, constant quality 16), with AAC narration normalized to −16 LUFS.
-An earlier unnarrated 1080p cut is in `renders/final_1080p60/`.
+**Final video:** `renders/final_4k_v5/hoeffdings_d_explainer_4k.mp4`. It runs 8:27 at 3840×2160 and 60 fps, encoded as H.264 High (NVENC p7, constant quality 16). The 256 kb/s AAC soundtrack is mastered with a single fixed gain to −17.4 LUFS and −1.5 dBTP.
+- `renders/final_4k_v4/` has audible artifacts and is superseded. 39 of its sentences were time-stretched, and its loudnorm master fell back to dynamic gain riding.
+- `renders/final_4k_narrated/` holds the first narrated cut. Its single-take narration mispronounced "Hoeffding" and rushed its cadence.
+- `renders/final_1080p60/` holds an earlier unnarrated 1080p cut.
 
 ## Chapters
 
@@ -136,13 +138,44 @@ Chapter 7 turns the same idea into a formal permutation test. After 2,000 shuffl
 
 The background score (`sound.rs`) is a soft chord pad per chapter plus bell chimes on key reveals. It is synthesized in plain Rust and ducked under the voice.
 
+### How the voice-over is produced (`narration_lab/`)
+
+A whole multi-sentence line spoken in one TTS call drifts in pace and pitch, and FrankenTTS mispronounces some names. So the narration is produced the way a voice-over session is cut. `run_v2.sh` runs the whole pipeline on a Linux GPU host.
+
+1. **Script.** `script_v4.tsv` is the director's script. It uses short spoken sentences, commas where a narrator breathes, and no colons. Lines that read ambiguously aloud were rewritten:
+   - "three sums" became "three separate sums";
+   - "Its price is" became "The trade-off is";
+   - the tied point's Q now says "one plus seven plus a half", matching the formula on screen.
+2. **Respellings.** Hard names are respelled for the TTS only, and each respelling is auditioned:
+   - Hoeffding → *Heffding / Hefding / Heff-ding*
+   - Pearson → *Peerson*
+   - Spearman → *Speerman*
+   - Wassily → *Vassily*
+   - manim → *man-im*
+
+   `alts.tsv` holds alternate phrasings for sentences whose reads came out badly. FrankenTTS decodes greedily, so different text is the only way to get a different read.
+3. **Synthesis.** Every sentence is synthesized on its own (`tts_batch.py`, `ftts say --voice robert`, content-addressed and resumable).
+4. **Transcription.** Each read is transcribed with faster-whisper large-v3-turbo on CUDA (`asr_batch.py`).
+5. **Scoring and editing.** `build_v2.py` scores each read on:
+   - intelligibility, with a misheard name penalized hard;
+   - articulation rate in syllables per second;
+   - unlicensed hesitations;
+   - pitch movement, and the sentence-final contour: statements fall, yes/no questions rise. Pitch-tracker octave errors are folded out first.
+
+   The winning read is then edited:
+   - Unlicensed pauses are tightened, and comma pauses are capped at 0.36 s.
+   - Each sentence is matched to −23 LUFS (EBU R128 integrated loudness).
+   - **Nothing is ever time-stretched.** An earlier cut slowed rushed reads with rubberband, which left phasey, echoey artifacts, so pace now comes only from wording, read choice and pauses. A fast read gets a 0.1 s longer breath after it.
+
+   Sentences are joined with gaps chosen by meaning. Each line then passes a lookahead peak limiter at loudness + 15 dB (`limiter_sweep.py` chose the ceiling). It reduces the voice by more than 1 dB only about 1% of the time, all on plosive bursts such as "tick" and "Step" (`peak_probe.py`).
+6. **Final gate.** `qa_lines.py` transcribes the 61 assembled lines against the spoken text. Mean match is 0.999, no line falls below 0.9, and no name is misheard.
+7. **Master.** `master.sh` measures the joined chapters and applies **one fixed gain**: as loud as −16 LUFS allows without passing −1.5 dBTP. There is no loudnorm, so nothing rides the level.
+
+`contour.py` prints a read's pitch contour against its words, which is how uptalk was told apart from tracker octave errors.
+
 ```bash
-./narrate.sh "$B" "$FTTS"             # ftts say --voice robert, one WAV per line (resumable)
-python3 qa_narration.py "$B"          # franken_whisper transcribes every line and diffs it with the script
 HOEFFDING_CUE_LOG=1 $B render ...     # logs each line's start time, for checking that picture and voice line up
 ```
-
-The QA pass caught one line where "A cross" is acoustically "across"; the line was rewritten. All 61 lines now match the script.
 
 ## Build and render
 
@@ -153,11 +186,15 @@ B=$CARGO_TARGET_DIR/release/hoeffding       # or target/release/hoeffding
 
 $B stats                                     # every number the video shows
 $B script                                    # the narration as TSV
-$B render all --res 960x540 --fps 30 --narration narration --out draft          # fast draft
+$B render all --res 960x540 --fps 30 --narration narration_v5 --out draft       # fast draft
 $B render all --res 3840x2160 --fps 60 --crf 16 --preset slow \
-              --narration narration --out renders/final_4k                      # delivery
+              --narration narration_v5 --out renders/final_4k                   # delivery (x264)
 
-cd renders/final_4k && ../../master.sh      # join chapters + two-pass loudnorm (video stream copied)
+# Delivery on a 2-GPU Linux host: all 8 chapters at once, NVENC, round-robin GPUs
+OUT_ROOT=out GPU_COUNT=2 NARRATION=franken_manim_hoeffding_explainer/narration_v5 \
+  HOEFFDING_ARGS="--threads 16 --encoder h264_nvenc --crf 16" ./render_parallel.sh BUILD_DIR
+
+cd renders/final_4k && ../../master.sh      # join chapters + one fixed gain (video stream copied)
 ```
 
 ### Delivery quality
@@ -205,7 +242,7 @@ fmn-python portal/hoeffding_portal.py RingHook ShuffleLiveD --format mp4 \
 - `\rho` and `\theta` in math mode render as ϱ and ϑ (bead `fm-5wq.60`), so Spearman's ρ uses the text face's upright ρ.
 - Native `Axes` cannot be repositioned with `c2p` following (bead `fm-native-axes-reposition-n1yd`), so the scenes use a small `Frame2` data-window helper (`kit.rs`).
 - There is no 2D camera pan or zoom on the fast retained route, so the scenes have none.
-- Frames render serially (bead `fm-sq8.5`), so a 4K render uses about 1–2 cores of 14. The final cut took roughly an hour.
+- A single scene's frames are captured serially (bead `fm-sq8.5`). Each frame's raster and NV12 conversion fan out over the render team's threads (bead `fm-4k-fused-yuv-recycled-raster-4r7h`). On a 128-thread Threadripper with two RTX 4090s, all eight 4K60 chapters (31,130 frames) rendered concurrently in 162 s when the host was idle.
 
 ## Architecture
 
